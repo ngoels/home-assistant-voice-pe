@@ -58,7 +58,7 @@ substitutions:
   # listens on port 8080. homeassistant.local resolves via mDNS on the LAN;
   # change this if your HA host has a different name/IP, e.g.
   # "ws://192.168.1.10:8080/".
-  va_url: "ws://homeassistant.local:8080/"
+  va_url: "ws://192.168.68.51:8080/"
   # (device→add-on WebSocket needs no auth token; it's a LAN-local service.)
 
 esphome:
