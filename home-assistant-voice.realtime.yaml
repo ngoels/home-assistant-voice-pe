@@ -2017,14 +2017,27 @@ va_client:
           - lambda: 'id(stop).set_probability_cutoff(102);'
           - script.execute: followup_window_watchdog
   on_repeated_failure:
-    # Backend has been unreachable for N reconnect attempts in a row.
-    # Intentionally silent: HA and the network reboot nightly, which used to
-    # trigger an unprompted "Home Assistant Cloud not available" announcement.
-    # The LED still shows no_ha_connection (red twinkle), and a wake word
-    # while disconnected still plays the error chime (see wake-word handler).
-    - logger.log:
-        level: WARN
-        format: "Backend unreachable (repeated reconnect failures); error chime suppressed"
+    # va_client fires this for two different things:
+    #   1) the backend WS has been unreachable for N reconnect attempts, and
+    #   2) the backend reported a server-side error during a turn.
+    # (1) happens at idle (a disconnect already forced phase -> idle), e.g. the
+    # nightly HA/network reboot -- keep that SILENT; the LED shows the lost
+    # connection and a wake word while disconnected still plays the chime.
+    # (2) happens mid-turn (this trigger is deferred before the error's own
+    # phase -> idle), so the user is waiting on an answer -- play the chime.
+    - if:
+        condition:
+          lambda: 'return id(voice_assistant_phase) != ${voice_assist_idle_phase_id};'
+        then:
+          - script.execute:
+              id: play_sound
+              priority: true
+              # audio_file id is `error_cloud_expired` (no "_sound" suffix).
+              sound_file: "error_cloud_expired"
+        else:
+          - logger.log:
+              level: WARN
+              format: "Backend unreachable (repeated reconnect failures); error chime suppressed"
   on_followup_opened:
     # Server's request_follow_up tool fired and va_client has waited
     # for the TTS hardware tail to clear (kTtsTailMs ≈ 800 ms after the
