@@ -2018,15 +2018,13 @@ va_client:
           - script.execute: followup_window_watchdog
   on_repeated_failure:
     # Backend has been unreachable for N reconnect attempts in a row.
-    # Play the error chime once so the user knows something's wrong —
-    # the LED is already in no_ha_connection (red twinkle) but that's
-    # easy to miss across the room.
-    - script.execute:
-        id: play_sound
-        priority: true
-        # audio_file id is `error_cloud_expired` (no "_sound" suffix),
-        # unlike the other chimes — original yaml inconsistency.
-        sound_file: "error_cloud_expired"
+    # Intentionally silent: HA and the network reboot nightly, which used to
+    # trigger an unprompted "Home Assistant Cloud not available" announcement.
+    # The LED still shows no_ha_connection (red twinkle), and a wake word
+    # while disconnected still plays the error chime (see wake-word handler).
+    - logger.log:
+        level: WARN
+        format: "Backend unreachable (repeated reconnect failures); error chime suppressed"
   on_followup_opened:
     # Server's request_follow_up tool fired and va_client has waited
     # for the TTS hardware tail to clear (kTtsTailMs ≈ 800 ms after the
@@ -2248,7 +2246,7 @@ micro_wake_word:
                             # every frame (!ws_connected_), and 7 s later
                             # the no-speech watchdog would close the session
                             # — user has no idea why nothing happened.
-                            # Play the same error chime as on_repeated_failure
+                            # Play the error chime (on_repeated_failure itself is silent)
                             # so the failure mode is audible.
                             - if:
                                 condition:
