@@ -47,6 +47,25 @@ static bool parse_uint_after_key(const std::string &msg, const char *key, uint32
   return true;
 }
 
+// Upper bound for handing a small control message (start/wake/interrupt/flush)
+// to the WebSocket. This is NOT a reply timeout -- replies arrive asynchronously
+// as WS events, so long backend work (web search etc.) is unaffected. A normal
+// send takes ~1 ms; it only blocks when the TCP link itself is stalled (e.g. the
+// network/HA rebooting). An unbounded wait there froze the main loop until the
+// task watchdog rebooted the device; with a bound we drop that one message and
+// the disconnect/reconnect path takes over.
+static constexpr uint32_t kWsSendTimeoutMs = 1000;
+
+static void send_text_bounded(void *ws_handle, const char *msg, size_t len) {
+  auto handle = static_cast<esp_websocket_client_handle_t>(ws_handle);
+  int sent = esp_websocket_client_send_text(handle, msg, static_cast<int>(len),
+                                            pdMS_TO_TICKS(kWsSendTimeoutMs));
+  if (sent < 0) {
+    ESP_LOGW(TAG, "WS send timed out/failed after %u ms, dropped: %.*s",
+             (unsigned) kWsSendTimeoutMs, (int) len, msg);
+  }
+}
+
 void VaClient::setup() {
   ESP_LOGCONFIG(TAG, "Setting up VA Client...");
 
@@ -367,8 +386,7 @@ void VaClient::on_ws_event(int32_t event_id, void *event_data) {
       });
 
       const char start_msg[] = "{\"type\":\"start\"}";
-      auto handle = static_cast<esp_websocket_client_handle_t>(this->ws_handle_);
-      esp_websocket_client_send_text(handle, start_msg, sizeof(start_msg) - 1, portMAX_DELAY);
+      send_text_bounded(this->ws_handle_, start_msg, sizeof(start_msg) - 1);
       this->set_phase_("idle");
       break;
     }
@@ -1012,8 +1030,7 @@ void VaClient::start_session() {
              (unsigned) kNoSpeechTimeoutMs);
     if (this->ws_connected_ && this->ws_handle_ != nullptr) {
       const char m[] = "{\"type\":\"interrupt\"}";
-      auto handle = static_cast<esp_websocket_client_handle_t>(this->ws_handle_);
-      esp_websocket_client_send_text(handle, m, sizeof(m) - 1, portMAX_DELAY);
+      send_text_bounded(this->ws_handle_, m, sizeof(m) - 1);
     }
     this->streaming_ = false;
     this->turn_t_wake_ = 0;
@@ -1124,8 +1141,7 @@ void VaClient::send_mic_flush_() {
   // never drop a valid command. Cheap no-op when the buffer was empty.
   if (this->ws_connected_ && this->ws_handle_ != nullptr) {
     const char msg[] = "{\"type\":\"flush\"}";
-    auto handle = static_cast<esp_websocket_client_handle_t>(this->ws_handle_);
-    esp_websocket_client_send_text(handle, msg, sizeof(msg) - 1, portMAX_DELAY);
+    send_text_bounded(this->ws_handle_, msg, sizeof(msg) - 1);
     ESP_LOGI(TAG, "follow-up window closed — sent flush (drop uncommitted mic audio)");
   }
 }
@@ -1139,8 +1155,7 @@ void VaClient::send_wake_() {
   // the racing response. Sent on every start_session(); old backends ignore it.
   if (this->ws_connected_ && this->ws_handle_ != nullptr) {
     const char msg[] = "{\"type\":\"wake\"}";
-    auto handle = static_cast<esp_websocket_client_handle_t>(this->ws_handle_);
-    esp_websocket_client_send_text(handle, msg, sizeof(msg) - 1, portMAX_DELAY);
+    send_text_bounded(this->ws_handle_, msg, sizeof(msg) - 1);
     ESP_LOGI(TAG, "wake — sent {\"type\":\"wake\"} (dangling-VAD guard)");
   }
 }
@@ -1193,8 +1208,7 @@ void VaClient::send_interrupt() {
   // room the instant we reconnected.
   if (this->ws_connected_ && this->ws_handle_ != nullptr) {
     const char msg[] = "{\"type\":\"interrupt\"}";
-    auto handle = static_cast<esp_websocket_client_handle_t>(this->ws_handle_);
-    esp_websocket_client_send_text(handle, msg, sizeof(msg) - 1, portMAX_DELAY);
+    send_text_bounded(this->ws_handle_, msg, sizeof(msg) - 1);
   } else {
     ESP_LOGW(TAG, "send_interrupt: WS not connected — local cleanup only");
   }
