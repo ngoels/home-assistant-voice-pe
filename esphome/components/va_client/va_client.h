@@ -32,7 +32,7 @@ class VaClient : public Component {
   // playback queue so the old TTS stops immediately. When false the firmware
   // keeps the original turn-based behaviour (mic off while the assistant
   // speaks). Relies on the XMOS AEC to suppress speaker→mic echo; see the
-  // ~10x leak caveat in CLAUDE.md.
+  // ~10x speaker->mic leak on this hardware (barge_in is disabled in yaml).
   void set_barge_in(bool v) { barge_in_ = v; }
   // Sets the output-volume multiplier applied to TTS in handle_binary_.
   // Driven from yaml by external_media_player's volume / mute state so the
@@ -99,10 +99,6 @@ class VaClient : public Component {
   // stale pre-wake segment → backend suppresses its thinking + cancels its
   // garbage response. Sent on every start_session(); old backends ignore it.
   void send_wake_();
-  // Mic pre-roll helper (mic-task only, no lock). push appends to the rolling
-  // ring while the session is closed; the ring is DISCARDED (not replayed) on
-  // session open — see preroll_discard_pending_.
-  void preroll_push_(const int16_t *data, size_t n);
   void handle_text_(const char *data, size_t len);
   void handle_binary_(const uint8_t *data, size_t len);
   void set_phase_(const std::string &phase);
@@ -163,26 +159,6 @@ class VaClient : public Component {
   // dropped garbage samples into the playback ring (audible as hiss).
   std::vector<int16_t> mono_buf_;
   std::vector<int16_t> tts_buf_;
-
-  // Mic pre-roll ring (int16 mono @ kMicSampleRate), allocated in PSRAM. The
-  // rolling ring continuously retains the most recent kPreRollMs of mic audio
-  // while the session is closed. We DO NOT replay it on session open: during
-  // the wake-chime + tail-delay window the ring inevitably captures the chime
-  // leaking through the mic (XMOS AEC leaves ~10x), and replaying it fed the
-  // chime back to OpenAI as a phantom utterance ("Au!"). Instead, on session
-  // open we DISCARD the ring (preroll_discard_pending_), matching marcinnowak79
-  // gemini_proxy's ring_buffer_->reset() on start. Trade-off: a word spoken
-  // *during* the chime is lost; the user speaks once the listening ring lights.
-  // Touched ONLY by the mic task (on_mic_data_) — no lock needed.
-  // preroll_discard_pending_ is set by start_session()/commit_followup_mic()
-  // (main loop) and consumed by the mic task: a plain bool like streaming_.
-  static constexpr uint32_t kMicSampleRate = 16000;  // i2s_mics rate (16 samples/ms)
-  static constexpr uint32_t kPreRollMs = 600;
-  int16_t *preroll_buf_{nullptr};
-  size_t preroll_capacity_samples_{0};
-  size_t preroll_head_{0};   // next write index
-  size_t preroll_count_{0};  // valid samples (<= capacity)
-  bool preroll_discard_pending_{false};
 
   // Streaming gate. True while the mic should be forwarded to the server:
   //   - between wake-word start_session() and "listening"/"thinking"
