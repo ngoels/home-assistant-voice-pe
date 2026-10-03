@@ -9,8 +9,11 @@
 >
 > 📖 New here? The full **[INSTALL guide](INSTALL.md)** sets up both halves, step by step.
 
-> **Customized fork** of `maxmaxme/home-assistant-voice-pe` (itself a fork of
-> `esphome/home-assistant-voice-pe`). The Voice PE runs as a **thin client**: it
+> **Personal fork** of
+> [`xandervanerven/home-assistant-voice-pe`](https://github.com/xandervanerven/home-assistant-voice-pe),
+> which builds on [`maxmaxme/home-assistant-voice-pe`](https://github.com/maxmaxme/home-assistant-voice-pe)
+> and the official [`esphome/home-assistant-voice-pe`](https://github.com/esphome/home-assistant-voice-pe)
+> firmware — see [Credits](#credits). The Voice PE runs as a **thin client**: it
 > streams microphone audio over a plain WebSocket to a backend add-on, which runs
 > an **OpenAI Realtime API** session (`gpt-realtime-2`) for speech-to-speech and
 > controls Home Assistant through the official
@@ -41,6 +44,29 @@
   in the backend, you get a natural back-and-forth — and with web search enabled it
   can look things up online (weather, news, facts), not just control your devices.
 
+## Changes in this fork (ngoels)
+
+On top of the upstream fork above, this repo adds reliability tweaks for a home
+where Home Assistant and the network reboot every night:
+
+- **No unprompted "cloud not available" announcement.** Upstream plays the stock
+  "Home Assistant Cloud" error sound whenever the add-on WebSocket can't be
+  reached — e.g. during a nightly reboot. Here that stays **silent while the
+  speaker is idle** (the red LED still shows the lost connection). You still hear
+  the sound when you say the wake word while disconnected, or when the backend
+  reports an error mid-conversation.
+- **No freeze on a stalled network.** Control messages to the add-on (start,
+  wake, stop, flush) give up after **1 s** instead of waiting forever, so a dead
+  TCP link can no longer hang the device until the watchdog reboots it. Replies
+  are asynchronous, so long backend work such as web search is unaffected.
+- **C++ built from this repo.** The `va_client` component is pulled from this
+  fork, not from upstream — upstream C++ fixes have to be merged in manually.
+- **Leaner build.** Logging defaults to INFO (set `logger: level: DEBUG` in your
+  device YAML to troubleshoot); the always-discarded mic pre-roll buffer, the
+  unused stock Nabu Casa configs, their web installer and CI workflows are removed.
+- **`va_url` points at a fixed LAN IP** (`ws://192.168.68.51:8080/`) — override it
+  for your own setup (see Setup, step 3).
+
 ## Setup (ESPHome Builder)
 
 1. Install and configure the **OpenAI Realtime 2 Voice Agent** add-on from
@@ -54,8 +80,9 @@
    stub — [`esphome-builder.dhcp.yaml`](esphome-builder.dhcp.yaml) for DHCP, or
    [`esphome-builder.static-ip.yaml`](esphome-builder.static-ip.yaml) for a fixed IP.
    Set `name`/`friendly_name` and keep the `packages:`/`dashboard_import:` lines.
-   Optionally override the `va_url` substitution if your add-on isn't at
-   `ws://homeassistant.local:8080/`.
+   Override the `va_url` substitution with your add-on's address, e.g.
+   `ws://homeassistant.local:8080/` — this fork's default is the maintainer's
+   own LAN IP. A fixed IP (DHCP reservation) is the most robust choice.
 4. **Install** once (USB, then wireless thereafter). The device adopts the
    firmware and connects to the add-on.
 
@@ -75,7 +102,28 @@ re-flash. No more copy-pasting.
   or the short listening window right after one); it has no effect before it has
   started answering.
 
----
+## Credits
 
-Based on the ESPHome source of the [Home Assistant Voice: Preview Edition](https://www.home-assistant.io/voice-pe/).
-See [the upstream documentation](https://voice-pe.home-assistant.io/) for hardware setup and troubleshooting.
+This fork stands entirely on the work of the original authors — thank you:
+
+- **[Xander (@xandervanerven)](https://github.com/xandervanerven)** —
+  the OpenAI Realtime 2 firmware fork this repo is based on
+  ([home-assistant-voice-pe](https://github.com/xandervanerven/home-assistant-voice-pe)),
+  the one-click update flow, the "stop"/audio reliability work, and the backend
+  add-on [ha-openai-realtime](https://github.com/xandervanerven/ha-openai-realtime).
+- **[Maxim Lepekha (@maxmaxme)](https://github.com/maxmaxme)** — the thin-client
+  design and the original `va_client` component
+  ([maxmaxme/home-assistant-voice-pe](https://github.com/maxmaxme/home-assistant-voice-pe)).
+- **[@marcinnowak79](https://github.com/marcinnowak79)** — inspiration from the
+  gemini-live-proxy approach
+  ([marcinnowak79/home-assistant-voice-pe](https://github.com/marcinnowak79/home-assistant-voice-pe)).
+- **[ESPHome](https://esphome.io) / [Nabu Casa](https://www.nabucasa.com)** and
+  all contributors to
+  [esphome/home-assistant-voice-pe](https://github.com/esphome/home-assistant-voice-pe)
+  — the original firmware for the
+  [Home Assistant Voice: Preview Edition](https://www.home-assistant.io/voice-pe/),
+  including the sounds this firmware still uses.
+
+See [the upstream documentation](https://voice-pe.home-assistant.io/) for hardware
+setup and troubleshooting. Licensed under the [ESPHome License](LICENSE)
+(MIT + GPLv3), same as upstream.
