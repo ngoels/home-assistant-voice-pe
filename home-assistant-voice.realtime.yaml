@@ -85,12 +85,9 @@ esphome:
       # dispatcher routes to no_ha_connection (red twinkle) until both wifi and
       # va_client WS come up — then it falls through to the idle phase naturally.
       - lambda: id(init_in_progress) = false;
-      # Seed va_client with the restored media_player volume so the first
-      # TTS reply respects the user's volume setting instead of blasting
-      # at 100% until they touch the +/- buttons.
-      - lambda: |-
-          id(va).set_volume(id(external_media_player).is_muted() ? 0.0f
-                                                                 : id(external_media_player).volume);
+      # Seed va_client's mute mirror from the restored media_player state.
+      # (Volume itself is applied in the DAC for every lane, see media_player.)
+      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : 1.0f);'
       - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
       - script.execute: control_leds
       # If after 10 minutes, the device is still initializing (It did not yet connect to Home Assistant), turn off the init_in_progress variable and run the script to refresh the LED status
@@ -183,6 +180,20 @@ ota:
 api:
   encryption:
     key: ${api_key}
+  # Home Assistant action `esphome.<device name>_announce` (field: message).
+  # The text is spoken by the OpenAI add-on in its configured voice, like a
+  # reply but without a follow-up listening window. If a conversation is in
+  # progress it waits (up to 60 s) until the speaker is idle.
+  actions:
+    - action: announce
+      variables:
+        message: string
+      then:
+        - wait_until:
+            condition:
+              lambda: 'return !id(va)->is_busy();'
+            timeout: 60s
+        - lambda: 'id(va)->send_announce(message);'
   # va-direct: start micro_wake_word HERE (mirrors upstream esphome/home-assistant-voice-pe
   # and the fjfricke reference) instead of on_boot. Starting mWW at on_boot+1s
   # raced the XMOS voice-kit coming up, so mWW could begin reading a mic that
@@ -494,7 +505,7 @@ binary_sensor:
                                       then:
                                         - lambda: 'id(va)->send_interrupt();'
                                         - speaker.stop:
-                                            id: media_resampling_speaker
+                                            id: va_resampling_speaker
                                         - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
                                         - script.execute: control_leds
                                       else:
@@ -1189,10 +1200,20 @@ sensor:
                 id: control_volume
                 increase_volume: true
           else:
-            # TODO va-direct: sendspin_group_media_player branch dropped (no media_player); always control hue.
-            - script.execute:
-                id: control_hue
-                increase_hue: true
+            # Center button held: adjust the Music Assistant group volume while
+            # the group player is playing, otherwise the LED hue (stock).
+            - if:
+                condition:
+                  media_player.is_playing:
+                    id: sendspin_group_media_player
+                then:
+                  - script.execute:
+                      id: control_group_volume
+                      increase_volume: true
+                else:
+                  - script.execute:
+                      id: control_hue
+                      increase_hue: true
     on_anticlockwise:
       - lambda: id(dial_touched) = true;
       - if:
@@ -1203,10 +1224,20 @@ sensor:
                 id: control_volume
                 increase_volume: false
           else:
-            # TODO va-direct: sendspin_group_media_player branch dropped (no media_player); always control hue.
-            - script.execute:
-                id: control_hue
-                increase_hue: false
+            # Center button held: adjust the Music Assistant group volume while
+            # the group player is playing, otherwise the LED hue (stock).
+            - if:
+                condition:
+                  media_player.is_playing:
+                    id: sendspin_group_media_player
+                then:
+                  - script.execute:
+                      id: control_group_volume
+                      increase_volume: false
+                else:
+                  - script.execute:
+                      id: control_hue
+                      increase_hue: false
 
 event:
   # Event entity exposed to the user to automate on complex center button presses.
@@ -1540,8 +1571,17 @@ script:
       increase_volume: bool  # True: Increase volume / False: Decrease volume.
     then:
       - delay: 16ms
-      # TODO va-direct: no sendspin_group_media_player; group volume not supported.
-      - lambda: id(group_volume_changed) = true;
+      - if:
+          condition:
+            lambda: return increase_volume;
+          then:
+            - lambda: id(group_volume_changed) = true;
+            - media_player.volume_up:
+                id: sendspin_group_media_player
+          else:
+            - lambda: id(group_volume_changed) = true;
+            - media_player.volume_down:
+                id: sendspin_group_media_player
       - script.execute: control_leds
       - delay: 1s
       - lambda: id(dial_touched) = false;
@@ -1758,11 +1798,14 @@ speaker:
     buffer_duration: 500ms
     audio_dac: aic3204_dac
 
-  # va-direct: restored from stock — mixer wraps the i2s leaf, two resamplers
-  # feed mixer inputs. The resampler/mixer chain handles 24k→48k upsample,
-  # mono→stereo, 16→32bit expansion AND drives the i2s leaf with the right
-  # startup handshake (which raw speaker.play() on the leaf was failing).
-  # va_client writes 24k mono pcm16 into announcement_resampling_speaker.
+  # Mixer wraps the i2s leaf; three resamplers feed its inputs. The
+  # resampler/mixer chain handles the upsample to 48k, mono->stereo, 16->32bit
+  # expansion AND drives the i2s leaf with the right startup handshake.
+  #   announcement lane: chimes + HA announcements (media_player)
+  #   media lane:        music (media_player media pipeline, Sendspin)
+  #   va lane:           the OpenAI assistant's voice (va_client, 24k mono pcm16)
+  # The assistant has its own lane so music and replies can coexist; music is
+  # ducked while the assistant is active (see va_client on_phase).
   - platform: mixer
     id: mixing_speaker
     output_speaker: i2s_audio_speaker
@@ -1772,6 +1815,8 @@ speaker:
       - id: announcement_mixing_input
         timeout: never
       - id: media_mixing_input
+        timeout: never
+      - id: va_mixing_input
         timeout: never
 
   # NOTE: the resampler platform has NO 'timeout' option (only the mixer SOURCES
@@ -1788,37 +1833,71 @@ speaker:
     output_speaker: media_mixing_input
     sample_rate: 48000
     bits_per_sample: 16
+  - platform: resampler
+    id: va_resampling_speaker
+    output_speaker: va_mixing_input
+    sample_rate: 48000
+    bits_per_sample: 16
 
 media_player:
+  # Sendspin group player (Music Assistant multi-room sync), as in stock.
+  - platform: sendspin
+    id: sendspin_group_media_player
   - platform: speaker_source
     id: external_media_player
     name: Media Player
     announcement_pipeline:
-      format: FLAC
-      num_channels: 1
+      format: FLAC     # FLAC is the least processor intensive codec
+      num_channels: 1  # Stereo audio is unnecessary for announcements
       sample_rate: 48000
       speaker: announcement_resampling_speaker
       sources:
         - audio_file_announcement_source
         - http_announcement_source
+    media_pipeline:
+      format: FLAC
+      num_channels: 2
+      sample_rate: 48000
+      speaker: media_resampling_speaker
+      sources:
+        - http_media_source
+        - sendspin_media_source
     volume_increment: 0.05
     volume_min: 0.4
     volume_max: 0.85
-    # Mirror the media_player volume / mute state into va_client so the
-    # device's physical +/- buttons and mute switch scale our TTS output.
-    # (No api: block on this firmware — there's no HA-side slider, the
-    # media_player exists only inside ESPHome.) Without this hook va_client
-    # writes into media_resampling_speaker bypassing the media_player, so
-    # the volume control would only affect chime announcements (wake /
-    # mute / error) — not the assistant's voice.
+    # The media_player volume is applied in hardware (the AIC3204 DAC behind
+    # the mixer), so it already covers the assistant's voice on the va lane.
+    # va_client therefore plays at full scale and only mirrors the mute state
+    # (belt and braces -- mute also reaches the DAC).
     on_volume:
-      - lambda: |-
-          id(va).set_volume(id(external_media_player).is_muted() ? 0.0f
-                                                                 : id(external_media_player).volume);
+      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : 1.0f);'
     on_mute:
       - lambda: 'id(va).set_volume(0.0f);'
+      - script.execute: control_leds
     on_unmute:
-      - lambda: 'id(va).set_volume(id(external_media_player).volume);'
+      - lambda: 'id(va).set_volume(1.0f);'
+      - script.execute: control_leds
+    # Duck music under chimes / announcements (stock behaviour).
+    on_announcement:
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 20
+          duration: 0.0s
+    on_state:
+      # Restore music once nothing needs it ducked any more: no timer ringing,
+      # assistant idle, no announcement playing.
+      if:
+        condition:
+          and:
+            - switch.is_off: timer_ringing
+            - lambda: 'return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};'
+            - not:
+                media_player.is_announcing: external_media_player
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_mixing_input
+              decibel_reduction: 0
+              duration: 1.0s
 
 sendspin:
   id: sendspin_hub
@@ -1921,14 +2000,35 @@ va_client:
   # false = original turn-based behaviour (mic closed while replying; interrupt
   # only via the "stop" word or the center button) — clean turns, no feedback.
   barge_in: false
-  # Write raw PCM16 mono 24kHz into the media resampler. We can't share the
-  # announcement lane with external_media_player — va_client grabs the
-  # resampling speaker on setup and holds it, which prevents the upstream
-  # wake-chime / mute / error sounds (all played via media_player as
-  # announcements) from reaching the i2s output. The media lane is otherwise
-  # unused (no music pipeline configured), so it's effectively ours.
-  speaker: media_resampling_speaker
+  # Write raw PCM16 mono 24kHz into a dedicated resampler/mixer lane.
+  # va_client grabs its resampling speaker on setup and holds it, so it can't
+  # share the announcement lane (chimes) or the media lane (music) with
+  # external_media_player -- it gets its own third mixer input instead.
+  speaker: va_resampling_speaker
   on_phase:
+    # Duck music while the assistant is active (stock did this on the
+    # voice_assistant start/end); restore it 1 s after the turn ends unless a
+    # timer or an announcement still needs it ducked.
+    - if:
+        condition:
+          lambda: 'return phase != "idle";'
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_mixing_input
+              decibel_reduction: 20
+              duration: 0.0s
+        else:
+          - if:
+              condition:
+                and:
+                  - switch.is_off: timer_ringing
+                  - not:
+                      media_player.is_announcing: external_media_player
+              then:
+                - mixer_speaker.apply_ducking:
+                    id: media_mixing_input
+                    decibel_reduction: 0
+                    duration: 1.0s
     - lambda: |-
         if (phase == "idle") {
           id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
@@ -2174,7 +2274,7 @@ micro_wake_word:
                           then:
                             - lambda: 'id(va)->send_interrupt();'
                             - speaker.stop:
-                                id: media_resampling_speaker
+                                id: va_resampling_speaker
                             - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
                             # Red stop-confirmation flash, then the idle ring
                             # (phase is idle, so stop_feedback_flash's closing
@@ -2198,7 +2298,7 @@ micro_wake_word:
                             # stop the resampler so audio cuts immediately.
                             - lambda: 'id(va)->send_interrupt();'
                             - speaker.stop:
-                                id: media_resampling_speaker
+                                id: va_resampling_speaker
                             # Play the same wake chime as fresh-session so the
                             # user gets an audible cue that the mic actually
                             # reopened — without it the device just silences
@@ -2264,7 +2364,7 @@ micro_wake_word:
                                   # tail of the old reply leaks under the wake chime.
                                   # No-op when there's nothing playing.
                                   - speaker.stop:
-                                      id: media_resampling_speaker
+                                      id: va_resampling_speaker
                                   - if:
                                       condition:
                                         switch.is_on: wake_sound

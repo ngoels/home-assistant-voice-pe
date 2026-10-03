@@ -64,6 +64,27 @@ where Home Assistant and the network reboot every night:
 - **Leaner build.** Logging defaults to INFO (set `logger: level: DEBUG` in your
   device YAML to troubleshoot); the always-discarded mic pre-roll buffer, the
   unused stock Nabu Casa configs, their web installer and CI workflows are removed.
+- **Announcements in the assistant's voice.** A Home Assistant action
+  `esphome.<device name>_announce` (field `message`) has the add-on speak the
+  text in your configured OpenAI voice — word for word, kept out of the
+  conversation history. It waits if a conversation is running, opens no
+  follow-up listening window, and "stop" cuts it short. Needs the add-on fork
+  [ngoels/ha-openai-realtime](https://github.com/ngoels/ha-openai-realtime)
+  0.6.2 or newer:
+
+  ```yaml
+  action: esphome.my_voice_pe_announce   # name depends on your device
+  data:
+    message: "The washing machine is done."
+  ```
+- **Music playback restored.** The media player's music pipeline (HTTP streams
+  via `media_player.play_media`, Music Assistant via Sendspin) and the Sendspin
+  group player are back, as in the stock firmware. The assistant's voice has its
+  own audio lane, so music and replies coexist: music is ducked by 20 dB while
+  the assistant is active and during chimes/announcements.
+- **Consistent volume.** The volume setting acts on the DAC for everything; the
+  assistant's voice is no longer attenuated a second time, so it is as loud as
+  chimes and announcements at the same setting.
 - **`va_url` points at a fixed LAN IP** (`ws://192.168.68.51:8080/`) — override it
   for your own setup (see Setup, step 3).
 
