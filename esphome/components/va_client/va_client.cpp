@@ -5,6 +5,7 @@
 #include "esphome/components/audio/audio.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 #include <esp_websocket_client.h>
@@ -115,7 +116,7 @@ void VaClient::loop() {
       // idle-timeout (verified vs ESPHome source): resample(stop_gracefully=false)
       // never returns FINISHED, and its output mixer-source is timeout:never, so the
       // chain stays WARM between normal replies. It goes COLD only after an explicit
-      // `speaker.stop: media_resampling_speaker` (yaml interrupt / "stop" word / wake /
+      // `speaker.stop: va_resampling_speaker` (yaml interrupt / "stop" word / wake /
       // follow-up), which tears the task down to STATE_STOPPED. The next reply then
       // cold-starts a fresh AudioResampler whose windowed-sinc FIR begins from a zero
       // state → a startup-transient click. A PSRAM prebuffer can't fix it (the transient
@@ -520,7 +521,9 @@ void VaClient::handle_binary_(const uint8_t *data, size_t len) {
   if (this->suppress_incoming_audio_)
     return;
   const uint32_t now_ms = millis();
-  if (this->turn_t_first_audio_out_ == 0 && this->turn_t_wake_ != 0) {
+  // Announcements have no wake (turn_t_wake_ == 0) but still need this set so
+  // the yaml "stop" handler (turn_has_reply_audio()) can cut them short.
+  if (this->turn_t_first_audio_out_ == 0 && (this->turn_t_wake_ != 0 || this->announcing_)) {
     this->turn_t_first_audio_out_ = now_ms;
   }
   // Detector 1: WS frame inter-arrival jitter. Normal cadence is ~20 ms
@@ -956,6 +959,7 @@ void VaClient::start_session() {
   this->followup_armed_ = false;
   this->idle_emit_pending_ = false;
   this->suppress_followup_ = false;
+  this->announcing_ = false;  // a wake supersedes any announcement in flight
   // A genuine new turn starts here — drop the post-stop `thinking` guard so
   // this turn's `thinking` shows normally. (Set last, AFTER the residual-reply
   // send_interrupt() above re-set it, so the wake always ends with it clear.)
@@ -1036,6 +1040,13 @@ void VaClient::open_followup_window_(uint32_t duration_ms) {
       }
       this->turn_t_wake_ = 0;  // mark turn as logged
     }
+  }
+  if (this->announcing_) {
+    // The reply that just finished was a Home Assistant announcement: nobody
+    // asked anything, so don't open a follow-up mic window after it.
+    this->announcing_ = false;
+    duration_ms = 0;
+    ESP_LOGI(TAG, "announcement finished — no follow-up window");
   }
   if (duration_ms == 0) {
     // Follow-up disabled for this call: turn-based behaviour like the
@@ -1147,6 +1158,51 @@ void VaClient::commit_followup_mic() {
   });
 }
 
+bool VaClient::is_busy() const {
+  return this->streaming_ || this->audio_fill_ > 0 || this->idle_emit_pending_ ||
+         this->followup_pending_ ||
+         static_cast<Phase>(this->current_phase_.load()) != Phase::IDLE;
+}
+
+void VaClient::send_announce(const std::string &text) {
+  if (!this->ws_connected_ || this->ws_handle_ == nullptr) {
+    ESP_LOGW(TAG, "announce: backend not connected — announcement dropped");
+    return;
+  }
+  if (text.empty()) {
+    ESP_LOGW(TAG, "announce: empty message — ignored");
+    return;
+  }
+  // Minimal JSON string escaping for the message text.
+  std::string msg = "{\"type\":\"announce\",\"text\":\"";
+  for (char ch : text) {
+    switch (ch) {
+      case '"': msg += "\\\""; break;
+      case '\\': msg += "\\\\"; break;
+      case '\n': msg += "\\n"; break;
+      case '\r': msg += "\\r"; break;
+      case '\t': msg += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(ch));
+          msg += buf;
+        } else {
+          msg += ch;
+        }
+    }
+  }
+  msg += "\"}";
+  // The announcement answers nothing the user said: let its audio through even
+  // if an earlier "stop" is still suppressing a cancelled reply's tail, and
+  // drop a follow-up window that was about to open (the user hasn't spoken).
+  this->suppress_incoming_audio_ = false;
+  this->announcing_ = true;
+  this->cancel_timeout("va_followup_open");
+  send_text_bounded(this->ws_handle_, msg.c_str(), msg.size());
+  ESP_LOGI(TAG, "announce: sent %u chars to backend", (unsigned) text.size());
+}
+
 void VaClient::send_interrupt() {
   // Best-effort cancel to the backend — ONLY if the socket is alive. The local
   // cleanup below must ALWAYS run: returning early on a dead socket (the old
@@ -1202,6 +1258,7 @@ void VaClient::send_interrupt() {
   // end-of-turn for the utterance we just cancelled, not a real new turn.
   // Cleared in start_session() (the next wake). See set_phase_.
   this->post_stop_guard_ = true;
+  this->announcing_ = false;  // "stop" also ends an announcement
   this->cancel_timeout("va_followup_open");
   ESP_LOGI(TAG, "send_interrupt — WS msg sent, queue flushed");
 }

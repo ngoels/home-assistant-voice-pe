@@ -79,6 +79,14 @@ class VaClient : public Component {
   // would otherwise corrupt the turn (no follow-up window). Reply/follow-up/
   // request-follow-up windows all have it set, so a real barge-in still works.
   bool turn_has_reply_audio() const { return this->turn_t_first_audio_out_ != 0; }
+  // Home Assistant announcement (yaml `api: actions: announce`). Sends
+  // {"type":"announce","text":...} to the backend, which has OpenAI speak the
+  // text in the configured voice; the audio then arrives like a normal reply.
+  // No follow-up mic window opens afterwards.
+  void send_announce(const std::string &text);
+  // True while a turn, reply or follow-up window is in progress. The yaml
+  // announce action waits for this to clear before sending.
+  bool is_busy() const;
 
   // Called from the static esp-idf event handler trampoline.
   void on_ws_event(int32_t event_id, void *event_data);
@@ -199,6 +207,9 @@ class VaClient : public Component {
   // cancelled reply actually goes silent. Cleared in set_phase_ on the next
   // "idle" (reply ended) or "listening" (a fresh turn's audio is legitimate).
   bool suppress_incoming_audio_{false};
+  // Set by send_announce(), consumed by open_followup_window_() (forces "no
+  // follow-up" for the announcement's own idle). Cleared on wake / interrupt.
+  bool announcing_{false};
   // Set by send_interrupt() (a local "stop"), cleared in start_session() (the
   // next wake). After a stop the mic gate is CLOSED, so no new turn can begin
   // until a wake — yet OpenAI's server VAD can still fire an end-of-turn for
@@ -260,7 +271,7 @@ class VaClient : public Component {
   // idle-timeout (verified vs ESPHome source): resample(stop_gracefully=false)
   // never returns FINISHED and its output mixer-source is timeout:never, so the
   // chain stays WARM between normal replies. It goes COLD only after an explicit
-  // `speaker.stop: media_resampling_speaker` (yaml interrupt / "stop" / wake /
+  // `speaker.stop: va_resampling_speaker` (yaml interrupt / "stop" / wake /
   // follow-up), which tears the task down (is_stopped()==true). The next reply
   // then cold-starts a fresh AudioResampler whose windowed-sinc FIR begins from a
   // zero state → a startup-transient click. A PSRAM prebuffer can't fix it (the
@@ -323,9 +334,9 @@ class VaClient : public Component {
   // continuation frames (op_code = 0) to the same handler.
   bool last_data_was_binary_{false};
 
-  // Output volume multiplier in [0, 1], updated from yaml whenever
-  // external_media_player.volume / mute changes. Defaults to 1.0 so a
-  // stand-alone va_client (no media_player wiring) still plays audibly.
+  // Output gain multiplier in [0, 1]. The user volume is applied in the DAC
+  // for every lane, so the yaml only uses this as a mute mirror (0 or 1).
+  // Defaults to 1.0 so a stand-alone va_client still plays audibly.
   float volume_{1.0f};
 
   // Ring buffer for pending TTS audio, allocated in PSRAM. The server can
