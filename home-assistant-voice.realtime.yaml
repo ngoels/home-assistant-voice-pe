@@ -162,10 +162,11 @@ network:
   enable_ipv6: true
 
 logger:
-  level: DEBUG
+  # INFO for everyday use. Switch to DEBUG when troubleshooting -- it logs every
+  # backend message and playback-drain stats every 500 ms.
+  level: INFO
   logs:
     sensor: WARN  # avoids logging debug sensor updates
-
 
 ota:
   - platform: esphome
@@ -182,7 +183,7 @@ ota:
 api:
   encryption:
     key: ${api_key}
-  # va-direct: start micro_wake_word HERE (mirrors stock home-assistant-voice.yaml
+  # va-direct: start micro_wake_word HERE (mirrors upstream esphome/home-assistant-voice-pe
   # and the fjfricke reference) instead of on_boot. Starting mWW at on_boot+1s
   # raced the XMOS voice-kit coming up, so mWW could begin reading a mic that
   # wasn't streaming yet and never recover — the wake word silently never fired.
@@ -1711,9 +1712,6 @@ script:
             - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
             - script.execute: control_leds
 
-  # (Removed: stock's `activate_stop_word_once` script — orphaned in this fork.
-  # "stop" arming is owned by va_client's on_phase + followup_window_watchdog.)
-
 i2s_audio:
   - id: i2s_output
     # i2s_output data pin is gpio10
@@ -1873,7 +1871,6 @@ media_source:
     id: sendspin_media_source
     fixed_delay: 480 microseconds  # The AIC3204 DAC used, as configured, on the VPE delays audio by 480 microseconds
 
-
 voice_kit:
   id: voice_kit_component
   i2c_id: internal_i2c
@@ -1905,22 +1902,10 @@ external_components:
     components: [va_client]
     refresh: 0s
 
-# va-direct: forward device logs to a UDP sink container on the Pi so they
-# show up in Dozzle alongside the rest of the stack. See voice-pe-logs in
-# home-infra/docker-compose.yml. Skip if the sink isn't running — sendto()
-# fails silently and the device keeps running.
-# va-direct: NTP wall clock for udp_log timestamps. Without this every JSON
-# log line goes out without `time` and Dozzle has to stamp by packet
-# arrival — fine but coarse. SNTP costs near-nothing.
+# Wall clock for log timestamps. Costs near-nothing.
 time:
   - platform: sntp
     id: sntp_time
-
-# udp_log removed: it forwarded logs to maxmaxme's Dozzle host (va.local),
-# which doesn't exist on a normal network. With the host unresolved and
-# DEBUG-level forwarding, the send path blocked the main loop and tripped the
-# task watchdog -> boot loop. Re-add (with a host that exists on your LAN) only
-# if you actually run a UDP log sink.
 
 va_client:
   id: va
@@ -1930,7 +1915,7 @@ va_client:
   # Handsfree barge-in: keep the mic open while the assistant is speaking so
   # you can talk over it and the backend's server VAD will cut the reply off.
   # Relies on the XMOS AEC to suppress speaker->mic echo (imperfect — see
-  # CLAUDE.md). DISABLED: on this hardware the ~10x speaker->mic leak fed back
+  # the va_client header). DISABLED: on this hardware the ~10x speaker->mic leak fed back
   # into the open mic during the reply, the (semantic) VAD flapped
   # listening<->thinking and once built into a loud acoustic-feedback squeal.
   # false = original turn-based behaviour (mic closed while replying; interrupt
@@ -2343,7 +2328,6 @@ select:
         } else if (x == "Very sensitive") {
           id(nabu).set_probability_cutoff(140);   // ~0.55
         }
-
 
 button:
   - platform: factory_reset
