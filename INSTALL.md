@@ -124,8 +124,9 @@ it to adopt the device and flash this firmware onto it.
    address.
 2. Click **Adopt**. ESPHome creates a device entry. **Don't install the stock config
    yet.**
-3. ESPHome generates an **API encryption key** and an **OTA password** for the device —
-   note both; you'll put them in `secrets.yaml` next.
+3. ESPHome generates an **API encryption key** for the device — note it; you'll
+   put it in `secrets.yaml` next. (It also secures wireless updates; any OTA
+   password ESPHome shows is not needed.)
 
 ### 2.3 Add your secrets
 
@@ -134,7 +135,6 @@ In ESPHome Builder → **Secrets** (top-right ⋮), add:
 ```yaml
 wifi_ssid: "Your-WiFi"
 wifi_password: "your-wifi-password"
-ota_password: "the-OTA-password-from-step-2.2"
 api_key: "the-API-encryption-key-from-step-2.2"   # 44-char base64
 
 # Optional — ONLY if you want a fixed IP (otherwise the device uses DHCP):
