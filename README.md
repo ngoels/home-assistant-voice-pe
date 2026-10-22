@@ -85,6 +85,10 @@ where Home Assistant and the network reboot every night:
 - **Consistent volume.** The volume setting acts on the DAC for everything; the
   assistant's voice is no longer attenuated a second time, so it is as loud as
   chimes and announcements at the same setting.
+- **Encrypted wireless updates, no OTA password.** OTA uploads use the api
+  encryption key. A device still on password-protected OTA needs one USB
+  install to switch. No unusable fallback Wi-Fi hotspot (re-setup via Improv
+  Bluetooth). Requires ESPHome 2026.10 or newer.
 - **`va_url` points at a fixed LAN IP** (`ws://192.168.68.51:8080/`) — override it
   for your own setup (see Setup, step 3).
 
@@ -95,7 +99,7 @@ where Home Assistant and the network reboot every night:
    (sets your OpenAI API key, the model, and the Home Assistant MCP connection).
 2. In **Builder → Secrets**, add the keys from
    [`secrets.yaml.example`](secrets.yaml.example): `wifi_ssid`, `wifi_password`,
-   `ota_password`, `api_key` (plus `static_ip`/`gateway`/`subnet`/`dns1`/`dns2`
+   `api_key` (plus `static_ip`/`gateway`/`subnet`/`dns1`/`dns2`
    only if you want a fixed IP).
 3. Create a new device in the dashboard and replace its YAML with a ready-made
    stub — [`esphome-builder.dhcp.yaml`](esphome-builder.dhcp.yaml) for DHCP, or

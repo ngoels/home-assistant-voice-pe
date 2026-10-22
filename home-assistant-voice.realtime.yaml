@@ -7,14 +7,14 @@
 # a small per-device stub, so updates are one click in the dashboard (no more
 # copy-pasting the whole file). The stub provides the device identity + secrets
 # as SUBSTITUTIONS (a remote package can't use !secret):
-#   name, friendly_name, wifi_ssid, wifi_password, ota_password, api_key
+#   name, friendly_name, wifi_ssid, wifi_password, api_key
 #   (+ static_ip/gateway/subnet/dns1/dns2 and a manual_ip override for a fixed IP)
 # See esphome-builder.dhcp.yaml in this repo for the stub template.
 # ============================================================================
 substitutions:
   # Device identity comes from the per-device stub (esphome-builder.dhcp.yaml); these
   # are safe defaults the stub overrides. Wi-Fi + secrets (wifi_ssid, wifi_password,
-  # ota_password, api_key) MUST be provided by the stub as substitutions, because
+  # api_key) MUST be provided by the stub as substitutions, because
   # a remote `packages:` include can't use !secret.
   name: home-assistant-voice
   friendly_name: Home Assistant Voice
@@ -134,11 +134,11 @@ wifi:
   # during replies. Costs ~20-40mA extra (this device is mains-powered, so fine).
   power_save_mode: none
   # Credentials from secrets.yaml (no improv needed for normal use); the device
-  # gets its IP from DHCP. The improv/AP blocks below stay as a fallback for re-setup.
+  # gets its IP from DHCP. Re-setup fallback: Improv over Bluetooth / USB serial.
+  # (No `ap:` fallback hotspot -- without captive_portal/web_server it could not
+  # be used for anything.)
   ssid: ${wifi_ssid}
   password: ${wifi_password}
-  ap:
-    ssid: "Voice PE Setup"
   on_connect:
     - delay: 5s  # give improv results time to transmit
     - ble.disable:
@@ -168,8 +168,11 @@ logger:
 ota:
   - platform: esphome
     id: ota_esphome
-    # OTA upload password (from the stub's ota_password substitution -> secrets.yaml).
-    password: ${ota_password}
+    # Wireless updates are encrypted and authenticated with the device's api
+    # encryption key (a bare `encryption:` block inherits it) -- no separate OTA
+    # password. A device still running password-protected OTA needs ONE install
+    # over USB to switch (or see the ESPHome docs for `allow_plaintext_upload`).
+    encryption: {}
 
 # va-direct fork: api re-enabled so this device shows up in Home Assistant
 # again (entities, OTA discovery, and diagnostics readable from HA). Voice
