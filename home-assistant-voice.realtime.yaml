@@ -70,7 +70,7 @@ esphome:
   project:
     name: "xandervanerven.voice-pe-openai-realtime"
     version: "1.2.0"
-  min_version: 2026.5.0
+  min_version: 2026.10.0
   on_boot:
     priority: 375
     then:
@@ -244,7 +244,7 @@ improv_serial:
 esp32_ble:
   name: ha-voice-pe
 
-esp32_improv:
+improv_ble:
   authorizer: center_button
   on_start:
     - lambda: id(improv_ble_in_progress) = true;
@@ -747,7 +747,7 @@ light:
     chipset: WS2812
     max_refresh_rate: 15ms
     num_leds: 12
-    rgb_order: GRB
+    channel_colors: GRB
     rmt_symbols: 192
     default_transition_length: 0ms
     power_supply: led_power
