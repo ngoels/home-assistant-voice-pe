@@ -82,9 +82,10 @@ where Home Assistant and the network reboot every night:
   group player are back, as in the stock firmware. The assistant's voice has its
   own audio lane, so music and replies coexist: music is ducked by 20 dB while
   the assistant is active and during chimes/announcements.
-- **Consistent volume.** The volume setting acts on the DAC for everything; the
-  assistant's voice is no longer attenuated a second time, so it is as loud as
-  chimes and announcements at the same setting.
+- **Consistent volume, no clipping.** The volume setting acts on the DAC for
+  everything. The assistant's voice gets a fixed headroom (`va_output_gain`,
+  default 0.5 = -6 dB) so the DAC's digital gain above ~72 % volume can't clip
+  it; override the substitution in your device YAML to fine-tune.
 - **Encrypted wireless updates, no OTA password.** OTA uploads use the api
   encryption key. A device still on password-protected OTA needs one USB
   install to switch. No unusable fallback Wi-Fi hotspot (re-setup via Improv

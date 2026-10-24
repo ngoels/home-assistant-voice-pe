@@ -112,6 +112,29 @@ void VaClient::loop() {
     size_t fill = this->audio_fill_;
     portEXIT_CRITICAL(&this->ring_mux_);
     if (fill > 0) {
+      // ORDER MATTERS: the jitter-buffer gate runs BEFORE the silence prime. The
+      // other way round, the 60 ms of priming silence played out while the gate
+      // was still collecting its cushion (150+ ms), so the chain was dry again
+      // when real audio started -- the warm-up was wasted and the underrun
+      // detector below fired on every reply. Now: collect the cushion first,
+      // then warm the chain, then play the reply straight behind the silence.
+      // Jitter buffer priming gate. After the ring was empty (reply start or a
+      // post-underflow gap) hold playback until either the prebuffer cushion has
+      // accumulated (fill >= target) or a deadline elapses (so real-time, non-
+      // burst audio still starts promptly). Holding here lets the downstream
+      // chain start with a cushion so a network gap doesn't dry it out → no
+      // crackle. Skipped entirely when playback_prebuffer_ms_ == 0 (disabled).
+      if (this->playback_priming_) {
+        const size_t target =
+            (size_t) this->playback_prebuffer_ms_ * (kPlaybackSampleRate / 1000) * 2;
+        if (fill >= target ||
+            (millis() - this->prime_started_ms_) >= this->playback_prebuffer_ms_) {
+          this->playback_priming_ = false;
+          ESP_LOGD(TAG, "prebuffer ready (%u bytes) — playback start", (unsigned) fill);
+        } else {
+          return;  // keep accumulating; don't drain (and don't false-flag underrun)
+        }
+      }
       // Resampler cold-start SILENCE-PRIME (crackle fix). The resampler does NOT
       // idle-timeout (verified vs ESPHome source): resample(stop_gracefully=false)
       // never returns FINISHED, and its output mixer-source is timeout:never, so the
@@ -151,23 +174,6 @@ void VaClient::loop() {
           // Hold real-audio drain until the chain is warmed. Real audio stays in
           // PSRAM. Re-enter loop() next tick to continue/finish priming.
           return;
-        }
-      }
-      // Jitter buffer priming gate. After the ring was empty (reply start or a
-      // post-underflow gap) hold playback until either the prebuffer cushion has
-      // accumulated (fill >= target) or a deadline elapses (so real-time, non-
-      // burst audio still starts promptly). Holding here lets the downstream
-      // chain start with a cushion so a network gap doesn't dry it out → no
-      // crackle. Skipped entirely when playback_prebuffer_ms_ == 0 (disabled).
-      if (this->playback_priming_) {
-        const size_t target =
-            (size_t) this->playback_prebuffer_ms_ * (kPlaybackSampleRate / 1000) * 2;
-        if (fill >= target ||
-            (millis() - this->prime_started_ms_) >= this->playback_prebuffer_ms_) {
-          this->playback_priming_ = false;
-          ESP_LOGD(TAG, "prebuffer ready (%u bytes) — playback start", (unsigned) fill);
-        } else {
-          return;  // keep accumulating; don't drain (and don't false-flag underrun)
         }
       }
       // Detector 3: downstream underrun. If the resampler/mixer/i2s chain
@@ -555,12 +561,10 @@ void VaClient::handle_binary_(const uint8_t *data, size_t len) {
     if (len == 0)
       return;
   }
-  // Apply user-controlled volume from external_media_player before writing to
-  // the ring. volume_ is set from yaml on every media_player volume / mute
-  // change. With vol ≤ 1 there is no mathematical way to overflow int16, but
-  // we keep a defensive saturation + clipped_samples_ counter so any future
-  // gain re-introduction shows up in the per-turn summary instead of silently
-  // distorting.
+  // Apply the output gain before writing to the ring. volume_ is set from yaml:
+  // 0 when the media_player is muted, otherwise a fixed headroom gain (the
+  // user volume itself is applied in the DAC for every lane). It is clamped to
+  // [0, 1], so int16 can never overflow here.
   size_t pairs = len / 2;
   if (pairs > 0) {
     auto *in = reinterpret_cast<const int16_t *>(data);
@@ -569,23 +573,29 @@ void VaClient::handle_binary_(const uint8_t *data, size_t len) {
     // stops while mWW runs), whereas we're on the WS task. Sharing one vector
     // raced the two tasks (concurrent resize/realloc + interleaved writes),
     // putting mic samples / freed memory into the TTS ring — audible as hiss.
-    this->tts_buf_.resize(pairs);
     float vol = this->volume_;
     if (vol < 0.0f) vol = 0.0f;
     else if (vol > 1.0f) vol = 1.0f;
-    // Q15 fixed point so the inner loop stays integer-only.
-    int32_t scale = static_cast<int32_t>(vol * 32768.0f);
-    uint32_t clipped = 0;
-    for (size_t i = 0; i < pairs; i++) {
-      int32_t v = (static_cast<int32_t>(in[i]) * scale) >> 15;
-      if (v > 32767) { v = 32767; clipped++; }
-      else if (v < -32768) { v = -32768; clipped++; }
-      this->tts_buf_[i] = static_cast<int16_t>(v);
+    if (vol >= 0.9999f) {
+      // Unity gain: queue the frame as-is, no per-sample work.
+      len = pairs * 2;
+    } else {
+      // tts_buf_ keeps its capacity between frames, so this only reallocates
+      // when a frame is larger than any before.
+      this->tts_buf_.resize(pairs);
+      if (vol <= 0.0f) {
+        // Muted: queue silence (keeps reply timing / follow-up logic intact).
+        std::memset(this->tts_buf_.data(), 0, pairs * sizeof(int16_t));
+      } else {
+        // Q15 fixed point; with vol < 1 the product can never exceed int16.
+        const int32_t scale = static_cast<int32_t>(vol * 32768.0f);
+        for (size_t i = 0; i < pairs; i++) {
+          this->tts_buf_[i] = static_cast<int16_t>((static_cast<int32_t>(in[i]) * scale) >> 15);
+        }
+      }
+      data = reinterpret_cast<const uint8_t *>(this->tts_buf_.data());
+      len = pairs * 2;
     }
-    this->clipped_samples_ += clipped;
-    data = reinterpret_cast<const uint8_t *>(this->tts_buf_.data());
-    // len is unchanged (pairs * 2 == len rounded down; trailing odd byte ignored).
-    len = pairs * 2;
   }
   // Two-part write: from tail to end, then wrap to start.
   // We need a stable snapshot of audio_tail_ for the memcpy destination,

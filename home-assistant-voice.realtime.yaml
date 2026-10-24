@@ -59,6 +59,11 @@ substitutions:
   # change this if your HA host has a different name/IP, e.g.
   # "ws://192.168.1.10:8080/".
   va_url: "ws://192.168.68.51:8080/"
+  # Fixed output gain for the assistant's voice (0..1). OpenAI audio arrives
+  # near full scale, and above ~72 % volume the AIC3204 DAC adds digital gain
+  # (up to ~+11 dB), which clips it. 0.5 = -6 dB headroom. Lower it (e.g. 0.35)
+  # if replies still distort at high volume; raise towards 1.0 if too quiet.
+  va_output_gain: "0.5"
   # (device→add-on WebSocket needs no auth token; it's a LAN-local service.)
 
 esphome:
@@ -87,7 +92,7 @@ esphome:
       - lambda: id(init_in_progress) = false;
       # Seed va_client's mute mirror from the restored media_player state.
       # (Volume itself is applied in the DAC for every lane, see media_player.)
-      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : 1.0f);'
+      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : ${va_output_gain}f);'
       - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
       - script.execute: control_leds
       # If after 10 minutes, the device is still initializing (It did not yet connect to Home Assistant), turn off the init_in_progress variable and run the script to refresh the LED status
@@ -107,6 +112,9 @@ esp32:
   framework:
     type: esp-idf
     version: recommended
+    advanced:
+      # ESPHome's boot-log hint: generic flash driver, frees some IRAM.
+      flash_chip: generic
     sdkconfig_options:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
@@ -203,7 +211,12 @@ api:
   # wasn't streaming yet and never recover — the wake word silently never fired.
   # on_client_connected runs once HA + WiFi + the audio path are fully up.
   on_client_connected:
-    - micro_wake_word.start:
+    - if:
+        condition:
+          not:
+            micro_wake_word.is_running:
+        then:
+          - micro_wake_word.start:
     # Keep "stop" disabled in the resting/idle state; on_phase arms it only while
     # the assistant is replying. Explicit here so the boot state is deterministic
     # regardless of whether the HA api or the va_client WS connects first.
@@ -1870,15 +1883,15 @@ media_player:
     volume_max: 0.85
     # The media_player volume is applied in hardware (the AIC3204 DAC behind
     # the mixer), so it already covers the assistant's voice on the va lane.
-    # va_client therefore plays at full scale and only mirrors the mute state
-    # (belt and braces -- mute also reaches the DAC).
+    # va_client applies only a fixed headroom gain (va_output_gain) and mirrors
+    # the mute state (belt and braces -- mute also reaches the DAC).
     on_volume:
-      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : 1.0f);'
+      - lambda: 'id(va).set_volume(id(external_media_player).is_muted() ? 0.0f : ${va_output_gain}f);'
     on_mute:
       - lambda: 'id(va).set_volume(0.0f);'
       - script.execute: control_leds
     on_unmute:
-      - lambda: 'id(va).set_volume(1.0f);'
+      - lambda: 'id(va).set_volume(${va_output_gain}f);'
       - script.execute: control_leds
     # Duck music under chimes / announcements (stock behaviour).
     on_announcement:
@@ -2050,7 +2063,13 @@ va_client:
     # if already running.
     - if:
         condition:
-          lambda: 'return phase == "idle";'
+          and:
+            - lambda: 'return phase == "idle";'
+            # Skip when already running: an unconditional start logs a
+            # "Wake word detection is already running" warning to HA on every
+            # idle -- every 10 s while the backend is unreachable.
+            - not:
+                micro_wake_word.is_running:
         then:
           - micro_wake_word.start:
     # Arm "stop" for the WHOLE reply AND through the follow-up listening window —
