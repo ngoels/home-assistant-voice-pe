@@ -98,7 +98,7 @@ known-good starting point — you can fine-tune later:
 | `mcp_tool_allowlist` | **blank** (use all of the official server's tools — it's already a small set) |
 | `enable_web_search` | `true` (online lookups on by default; set `false` to disable) |
 | `web_search_model` | `gpt-5.5` (best quality; mini/nano are cheaper) |
-| `web_search_city` | your town, e.g. `Trumau` (country and time zone come from Home Assistant) |
+| `web_search_city` | your town, e.g. `Wien` (country and time zone come from Home Assistant) |
 | `enable_voice_commands` | `true` (your sentence automations work by voice — see 1.6) |
 | `instructions` | the English default (to change language, see Part 5) |
 
