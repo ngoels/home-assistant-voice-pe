@@ -89,7 +89,7 @@ where Home Assistant and the network reboot every night:
 - **Encrypted wireless updates, no OTA password.** OTA uploads use the api
   encryption key. A device still on password-protected OTA needs one USB
   install to switch. No unusable fallback Wi-Fi hotspot (re-setup via Improv
-  Bluetooth). Requires ESPHome 2026.10 or newer.
+  Bluetooth). Requires ESPHome 2026.11 or newer.
 - **`va_url` points at a fixed LAN IP** (`ws://192.168.68.51:8080/`) — override it
   for your own setup (see Setup, step 3).
 

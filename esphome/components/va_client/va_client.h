@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -94,7 +95,7 @@ class VaClient : public Component {
  protected:
   void connect_();
   void schedule_reconnect_();
-  void on_mic_data_(const std::vector<uint8_t> &samples);
+  void on_mic_data_(std::span<const uint8_t> samples);
   // Tell the backend to drop any uncommitted mic audio NOW. Sent when the mic
   // gate closes mid-stream by TIMER (a follow-up window expiring) — a partial
   // utterance left in OpenAI's input buffer would otherwise be "completed" by a

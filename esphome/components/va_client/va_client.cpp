@@ -72,7 +72,7 @@ void VaClient::setup() {
 
   if (this->mic_ != nullptr) {
     this->mic_->add_data_callback(
-        [this](const std::vector<uint8_t> &data) { this->on_mic_data_(data); });
+        [this](const microphone::AudioCapture &capture) { this->on_mic_data_(capture.data); });
   } else {
     ESP_LOGE(TAG, "Microphone not configured");
   }
@@ -632,7 +632,7 @@ void VaClient::handle_binary_(const uint8_t *data, size_t len) {
   // queue depth.
 }
 
-void VaClient::on_mic_data_(const std::vector<uint8_t> &samples) {
+void VaClient::on_mic_data_(std::span<const uint8_t> samples) {
   if (!this->ws_connected_ || this->ws_handle_ == nullptr)
     return;
   // Streaming gate. When no session is active we don't forward frames to the
