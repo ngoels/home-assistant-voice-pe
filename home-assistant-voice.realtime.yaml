@@ -2292,7 +2292,7 @@ micro_wake_word:
                       # follow-up window, so a real barge-in there still works.)
                       - if:
                           condition:
-                            lambda: 'return id(voice_assistant_phase) != ${voice_assist_idle_phase_id} && id(va)->turn_has_reply_audio();'
+                            lambda: 'return id(voice_assistant_phase) != ${voice_assist_idle_phase_id} && id(va)->stop_allowed();'
                           then:
                             - lambda: 'id(va)->send_interrupt();'
                             - speaker.stop:
@@ -2305,7 +2305,7 @@ micro_wake_word:
                             - micro_wake_word.disable_model: stop
                           else:
                             - logger.log:
-                                format: "ignoring 'stop' — no reply audio yet (phase=%d), nothing to stop"
+                                format: "ignoring 'stop' — no reply audio yet or announcement just started (phase=%d)"
                                 args: ['id(voice_assistant_phase)']
                                 level: INFO
                     else:

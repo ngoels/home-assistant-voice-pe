@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/components/microphone/microphone.h"
 #include "esphome/components/speaker/speaker.h"
 
@@ -80,6 +81,17 @@ class VaClient : public Component {
   // would otherwise corrupt the turn (no follow-up window). Reply/follow-up/
   // request-follow-up windows all have it set, so a real barge-in still works.
   bool turn_has_reply_audio() const { return this->turn_t_first_audio_out_ != 0; }
+  // "stop" may cancel the reply: reply audio has started and, for a Home
+  // Assistant announcement, its first seconds are over. The speaker's own voice
+  // at the very start of an announcement can false-trigger the stop model (seen
+  // twice on the same welcome announcement, 1.2 s in). The center
+  // button is not affected.
+  bool stop_allowed() const {
+    if (!this->turn_has_reply_audio())
+      return false;
+    return !this->announcing_ ||
+           (millis() - this->turn_t_first_audio_out_) >= kAnnounceStopGraceMs;
+  }
   // Home Assistant announcement (yaml `api: actions: announce`). Sends
   // {"type":"announce","text":...} to the backend, which has OpenAI speak the
   // text in the configured voice; the audio then arrives like a normal reply.
@@ -349,6 +361,9 @@ class VaClient : public Component {
   // PSRAM is 8 MB on the Voice PE so cost is negligible.
   uint8_t *audio_buf_{nullptr};
   static constexpr size_t kAudioBufBytes = 2 * 1024 * 1024;
+  // Ignore the "stop" wake word for this long after an announcement's first
+  // audio (see stop_allowed()).
+  static constexpr uint32_t kAnnounceStopGraceMs = 2000;
   size_t audio_head_{0};  // read pos (next byte to play)
   size_t audio_tail_{0};  // write pos (next byte to fill)
   size_t audio_fill_{0};  // bytes currently queued (audio_tail_ ≥ audio_head_ when not wrapped)
